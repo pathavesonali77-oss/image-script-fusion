@@ -274,12 +274,25 @@ export async function buildCharacterBible(script: string): Promise<string> {
     "thin wiry build, faded grey school shirt with frayed collar, small scar above left eyebrow. " +
     "No headings, no numbering, no extra commentary. Do not deliberate — answer immediately.";
 
-  // head-only sample, cut on a line boundary so the model never sees half a word
+  // Sampled across the WHOLE script (opening + middle + end), not just the
+  // head: in an hour-long script most characters are introduced long after the
+  // first scenes, and any character missing from the bible got no fixed look.
   const sampleAt = (budget: number) => {
     if (script.length <= budget) return script;
-    const head = script.slice(0, budget);
-    const cut = head.lastIndexOf("\n");
-    return cut > budget * 0.5 ? head.slice(0, cut) : head;
+    const slice = (from: number, len: number) => {
+      const raw = script.slice(from, from + len);
+      const start = from === 0 ? 0 : raw.indexOf("\n") + 1;
+      const cut = raw.lastIndexOf("\n");
+      return raw.slice(start, cut > len * 0.5 ? cut : undefined);
+    };
+    const part = Math.floor(budget / 3);
+    return [
+      slice(0, part),
+      slice(Math.floor(script.length / 2) - part / 2, part),
+      slice(Math.max(0, script.length - part), part),
+    ]
+      .filter(Boolean)
+      .join("\n...\n");
   };
 
   let lastErr = "";
@@ -289,8 +302,9 @@ export async function buildCharacterBible(script: string): Promise<string> {
       const out = await zaiChat(
         [
           { role: "system", content: system },
-          { role: "user", content: `SCRIPT OPENING:\n${sampleAt(budget)}` },
+          { role: "user", content: `SCRIPT SAMPLES (start, middle, end):\n${sampleAt(budget)}` },
         ],
+
         { maxTokens: 1200, timeoutMs: 180_000, attempts: 2, slot: i },
       );
       const bible = stripFences(out).slice(0, 2400);
@@ -569,6 +583,7 @@ export async function writePrompts(
   const casts = carryForward(parseBeatCast(brief), segments.length);
   const actions = parseBeatActions(brief);
   const state = parseState(brief);
+  const chunkCast = parseCastBlock(brief);
 
   // One timestamp = one image: the returned array is always exactly as long as
   // `segments`, in the same order, with a fallback prompt rather than a hole.
@@ -584,7 +599,7 @@ export async function writePrompts(
     const pinned = enforceLocation(dense, locations[i + 1]);
     // Second safety net: keep the cast exactly as the chunk analysis resolved it
     // (including "nobody"), so pronoun lines can't fall back to the protagonist.
-    const cast = enforceCast(pinned, casts[i + 1]);
+    const cast = castLock(enforceCast(pinned, casts[i + 1]), chunkCast, bible);
     // Third safety net: if the prompt lost this line's own action, pin the beat's
     // analysed action back so the image still shows what the script line says.
     return sanitizePrompt(enforceWorldState(enforceBeatAction(cast, action), state));
@@ -621,6 +636,69 @@ export function briefField(brief: string, label: string): string {
   const m = re.exec(brief);
   return m ? (m[1] ?? "").trim() : "";
 }
+
+/**
+ * Pulls the whole multi-line CAST block out of a chunk brief and splits it into
+ * `Name -> fixed traits` entries.
+ *
+ * The bible only covers the characters introduced in the script's opening, so
+ * everyone who shows up later (a shopkeeper, a friend, a second lead) had NO
+ * description attached to their name at all — the renderer then drew whoever it
+ * liked, which is how one elderly woman ended up in every single panel.
+ */
+export function parseCastBlock(brief: string): { name: string; traits: string }[] {
+  if (!brief) return [];
+  const m = /^\s*CAST\s*:\s*([\s\S]*?)(?=^\s*(?:OBJECTS|LIGHT|BEATS|STATE|SETTING)\s*:|$(?![\s\S]))/im.exec(brief);
+  const block = (m?.[1] ?? "").trim();
+  if (!block || /^none$/i.test(block)) return [];
+  return block
+    .split(/\n|;/)
+    .map((l) => l.replace(/^[\s\-*•\d.)]+/, "").trim())
+    .filter((l) => l.length > 3)
+    .map((l) => {
+      // "Name: traits", "Name - traits" or "Name (traits)"
+      const sep = /^([^:(\-–]{2,40})\s*[:(\-–]\s*(.+?)\)?\s*$/.exec(l);
+      if (!sep) return null;
+      const name = (sep[1] ?? "").trim().replace(/[,.]$/, "");
+      const traits = (sep[2] ?? "").trim();
+      if (!name || !traits || traits.length < 4) return null;
+      return { name, traits };
+    })
+    .filter((v): v is { name: string; traits: string } => v !== null)
+    .slice(0, 8);
+}
+
+/**
+ * Stamps each chunk-cast member's own gender, age and look next to their name
+ * in the prompt, for anyone the bible does not already cover. This is what
+ * stops a named young man from being rendered as a generic (or previously
+ * drawn) old woman.
+ */
+export function castLock(
+  prompt: string,
+  cast: { name: string; traits: string }[],
+  bible?: string,
+): string {
+  if (cast.length === 0) return prompt;
+  const known = new Set(parseBible(bible ?? "").map((e) => e.name.toLowerCase()));
+  const present = cast.filter(
+    (e) =>
+      !known.has(e.name.toLowerCase()) &&
+      new RegExp(`\\b${escapeRe(e.name)}\\b`, "i").test(prompt),
+  );
+  if (present.length === 0) return prompt;
+  const parts = present.map((e) => {
+    const g = genderOf(e.traits);
+    const age = ageOf(e.traits);
+    const traits = e.traits.replace(/[.;]$/, "");
+    const head = g
+      ? `${e.name} is unmistakably ${g.toUpperCase()} (${g === "male" ? "a man, masculine face, body, hair and clothing" : "a woman, feminine face, body, hair and clothing"}) — ${traits}`
+      : `${e.name} — ${traits}`;
+    return age ? `${head}; ${e.name} looks exactly ${age}` : head;
+  });
+  return `${prompt} Fixed identities in this frame, never swapped or re-aged: ${parts.join("; ")}.`;
+}
+
 
 /**
  * Reads the brief's handover STATE line: the world facts that must not change
@@ -1062,13 +1140,22 @@ export function characterLock(prompt: string, bible?: string): string {
   const entries = parseBible(bible);
   if (entries.length === 0) return "";
   let matched = entries.filter((e) => new RegExp(`\\b${escapeRe(e.name)}\\b`, "i").test(prompt));
-  // Pronoun-only beats ("he was lying on the stone") named nobody, so no lock
-  // was applied at all and the protagonist's hair/face changed every panel.
-  // A peopled prompt with no named match falls back to the lead character.
+  // Pronoun-only beats ("he was lying on the stone") name nobody. Falling back
+  // to the FIRST bible entry was drawing the same person (often the elderly
+  // woman listed first) into every unnamed panel, including panels about a
+  // young man. The fallback now has to agree with the prompt's own gender
+  // words, and gives up entirely when nothing matches.
   if (matched.length === 0) {
-    if (!/\b(he|him|his|she|her|they|them|man|boy|woman|girl|person|figure)\b/i.test(prompt)) return "";
-    matched = entries.slice(0, 1);
+    const male = /\b(he|him|his|himself|man|men|boy|boys|male|guy|father|brother|son)\b/i.test(prompt);
+    const female = /\b(she|her|herself|woman|women|girl|girls|female|lady|mother|sister|daughter)\b/i.test(prompt);
+    if (!male && !female) return "";
+    const want = male && !female ? "male" : female && !male ? "female" : null;
+    if (!want) return "";
+    const candidate = entries.find((e) => genderOf(e.traits) === want);
+    if (!candidate) return "";
+    matched = [candidate];
   }
+
 
   return (
     "Fixed character identity (age, gender and appearance must match exactly for every character, " +
