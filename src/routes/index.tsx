@@ -495,7 +495,8 @@ function Index() {
             const msg = e instanceof Error ? e.message : String(e);
             group.forEach((g) => requeue(g, msg));
           }
-          drawn += group.length;
+          // Count finished panels only — re-queued jobs must not inflate it.
+          drawn = list.filter((s) => s.status === "done").length;
           tick();
           persist();
         }
