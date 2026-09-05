@@ -1062,13 +1062,22 @@ export function characterLock(prompt: string, bible?: string): string {
   const entries = parseBible(bible);
   if (entries.length === 0) return "";
   let matched = entries.filter((e) => new RegExp(`\\b${escapeRe(e.name)}\\b`, "i").test(prompt));
-  // Pronoun-only beats ("he was lying on the stone") named nobody, so no lock
-  // was applied at all and the protagonist's hair/face changed every panel.
-  // A peopled prompt with no named match falls back to the lead character.
+  // Pronoun-only beats ("he was lying on the stone") name nobody. Falling back
+  // to the FIRST bible entry was drawing the same person (often the elderly
+  // woman listed first) into every unnamed panel, including panels about a
+  // young man. The fallback now has to agree with the prompt's own gender
+  // words, and gives up entirely when nothing matches.
   if (matched.length === 0) {
-    if (!/\b(he|him|his|she|her|they|them|man|boy|woman|girl|person|figure)\b/i.test(prompt)) return "";
-    matched = entries.slice(0, 1);
+    const male = /\b(he|him|his|himself|man|men|boy|boys|male|guy|father|brother|son)\b/i.test(prompt);
+    const female = /\b(she|her|herself|woman|women|girl|girls|female|lady|mother|sister|daughter)\b/i.test(prompt);
+    if (!male && !female) return "";
+    const want = male && !female ? "male" : female && !male ? "female" : null;
+    if (!want) return "";
+    const candidate = entries.find((e) => genderOf(e.traits) === want);
+    if (!candidate) return "";
+    matched = [candidate];
   }
+
 
   return (
     "Fixed character identity (age, gender and appearance must match exactly for every character, " +
