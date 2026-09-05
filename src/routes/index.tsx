@@ -251,9 +251,18 @@ function Index() {
       tick(true);
 
       let keyTick = 0;
-      const queue: { seg: Shot; prompt: string }[] = pending
+      type Job = { seg: Shot; prompt: string; attempts: number };
+      const queue: Job[] = pending
         .filter((s) => s.prompt && !s.url)
-        .map((s) => ({ seg: s, prompt: s.prompt as string }));
+        .map((s) => ({ seg: s, prompt: s.prompt as string, attempts: 0 }));
+
+      /**
+       * One timestamp = one image, in any condition: a failed panel is pushed
+       * back onto the queue and re-drawn with a fresh seed and key instead of
+       * being dropped. The cap only protects against a genuinely broken
+       * provider looping forever; 10 attempts is far past any real outage.
+       */
+      const MAX_IMAGE_ATTEMPTS = 10;
 
       let promptingDone = batches.length === 0;
 
