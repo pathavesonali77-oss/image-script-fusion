@@ -569,6 +569,7 @@ export async function writePrompts(
   const casts = carryForward(parseBeatCast(brief), segments.length);
   const actions = parseBeatActions(brief);
   const state = parseState(brief);
+  const chunkCast = parseCastBlock(brief);
 
   // One timestamp = one image: the returned array is always exactly as long as
   // `segments`, in the same order, with a fallback prompt rather than a hole.
@@ -584,7 +585,7 @@ export async function writePrompts(
     const pinned = enforceLocation(dense, locations[i + 1]);
     // Second safety net: keep the cast exactly as the chunk analysis resolved it
     // (including "nobody"), so pronoun lines can't fall back to the protagonist.
-    const cast = enforceCast(pinned, casts[i + 1]);
+    const cast = castLock(enforceCast(pinned, casts[i + 1]), chunkCast, bible);
     // Third safety net: if the prompt lost this line's own action, pin the beat's
     // analysed action back so the image still shows what the script line says.
     return sanitizePrompt(enforceWorldState(enforceBeatAction(cast, action), state));
@@ -633,7 +634,7 @@ export function briefField(brief: string, label: string): string {
  */
 export function parseCastBlock(brief: string): { name: string; traits: string }[] {
   if (!brief) return [];
-  const m = /^\s*CAST\s*:\s*([\s\S]*?)(?=^\s*(OBJECTS|LIGHT|BEATS|STATE|SETTING)\s*:|\Z)/im.exec(brief);
+  const m = /^\s*CAST\s*:\s*([\s\S]*?)(?=^\s*(?:OBJECTS|LIGHT|BEATS|STATE|SETTING)\s*:|$(?![\s\S]))/im.exec(brief);
   const block = (m?.[1] ?? "").trim();
   if (!block || /^none$/i.test(block)) return [];
   return block
