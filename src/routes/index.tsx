@@ -314,7 +314,7 @@ function Index() {
               return;
             }
             record(s.index, { prompt, status: "waiting" });
-            queue.push({ seg: s as Shot, prompt });
+            queue.push({ seg: s as Shot, prompt, attempts: 0 });
           });
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
