@@ -274,12 +274,25 @@ export async function buildCharacterBible(script: string): Promise<string> {
     "thin wiry build, faded grey school shirt with frayed collar, small scar above left eyebrow. " +
     "No headings, no numbering, no extra commentary. Do not deliberate — answer immediately.";
 
-  // head-only sample, cut on a line boundary so the model never sees half a word
+  // Sampled across the WHOLE script (opening + middle + end), not just the
+  // head: in an hour-long script most characters are introduced long after the
+  // first scenes, and any character missing from the bible got no fixed look.
   const sampleAt = (budget: number) => {
     if (script.length <= budget) return script;
-    const head = script.slice(0, budget);
-    const cut = head.lastIndexOf("\n");
-    return cut > budget * 0.5 ? head.slice(0, cut) : head;
+    const slice = (from: number, len: number) => {
+      const raw = script.slice(from, from + len);
+      const start = from === 0 ? 0 : raw.indexOf("\n") + 1;
+      const cut = raw.lastIndexOf("\n");
+      return raw.slice(start, cut > len * 0.5 ? cut : undefined);
+    };
+    const part = Math.floor(budget / 3);
+    return [
+      slice(0, part),
+      slice(Math.floor(script.length / 2) - part / 2, part),
+      slice(Math.max(0, script.length - part), part),
+    ]
+      .filter(Boolean)
+      .join("\n...\n");
   };
 
   let lastErr = "";
@@ -289,8 +302,9 @@ export async function buildCharacterBible(script: string): Promise<string> {
       const out = await zaiChat(
         [
           { role: "system", content: system },
-          { role: "user", content: `SCRIPT OPENING:\n${sampleAt(budget)}` },
+          { role: "user", content: `SCRIPT SAMPLES (start, middle, end):\n${sampleAt(budget)}` },
         ],
+
         { maxTokens: 1200, timeoutMs: 180_000, attempts: 2, slot: i },
       );
       const bible = stripFences(out).slice(0, 2400);
