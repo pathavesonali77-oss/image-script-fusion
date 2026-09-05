@@ -10,4 +10,9 @@
 - [ ] Reduce final video encoding from 1080p 30fps to 720p 24fps (browser + Colab encoder)
 
 ## Done
+- [x] Confirmed the text service allows 5 requests/min PER KEY (not 60) — 7 keys = 35/min total
+- [x] Prompt writing switched from strict JSON to lenient numbered lines + forgiving parser
+- [x] Page fan-out capped at 6 writing lanes (one analysis + one writing call per 15 lines)
+- [x] Temporary chat timing log removed
+- [x] Full re-run verified: 3/3 panels rendered, same room/props kept across panels
 - [x] Final video encoding reduced to 1280x720 @ 24fps (was 1920x1080 @ 30fps)
