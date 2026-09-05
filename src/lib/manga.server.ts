@@ -623,6 +623,69 @@ export function briefField(brief: string, label: string): string {
 }
 
 /**
+ * Pulls the whole multi-line CAST block out of a chunk brief and splits it into
+ * `Name -> fixed traits` entries.
+ *
+ * The bible only covers the characters introduced in the script's opening, so
+ * everyone who shows up later (a shopkeeper, a friend, a second lead) had NO
+ * description attached to their name at all — the renderer then drew whoever it
+ * liked, which is how one elderly woman ended up in every single panel.
+ */
+export function parseCastBlock(brief: string): { name: string; traits: string }[] {
+  if (!brief) return [];
+  const m = /^\s*CAST\s*:\s*([\s\S]*?)(?=^\s*(OBJECTS|LIGHT|BEATS|STATE|SETTING)\s*:|\Z)/im.exec(brief);
+  const block = (m?.[1] ?? "").trim();
+  if (!block || /^none$/i.test(block)) return [];
+  return block
+    .split(/\n|;/)
+    .map((l) => l.replace(/^[\s\-*•\d.)]+/, "").trim())
+    .filter((l) => l.length > 3)
+    .map((l) => {
+      // "Name: traits", "Name - traits" or "Name (traits)"
+      const sep = /^([^:(\-–]{2,40})\s*[:(\-–]\s*(.+?)\)?\s*$/.exec(l);
+      if (!sep) return null;
+      const name = (sep[1] ?? "").trim().replace(/[,.]$/, "");
+      const traits = (sep[2] ?? "").trim();
+      if (!name || !traits || traits.length < 4) return null;
+      return { name, traits };
+    })
+    .filter((v): v is { name: string; traits: string } => v !== null)
+    .slice(0, 8);
+}
+
+/**
+ * Stamps each chunk-cast member's own gender, age and look next to their name
+ * in the prompt, for anyone the bible does not already cover. This is what
+ * stops a named young man from being rendered as a generic (or previously
+ * drawn) old woman.
+ */
+export function castLock(
+  prompt: string,
+  cast: { name: string; traits: string }[],
+  bible?: string,
+): string {
+  if (cast.length === 0) return prompt;
+  const known = new Set(parseBible(bible ?? "").map((e) => e.name.toLowerCase()));
+  const present = cast.filter(
+    (e) =>
+      !known.has(e.name.toLowerCase()) &&
+      new RegExp(`\\b${escapeRe(e.name)}\\b`, "i").test(prompt),
+  );
+  if (present.length === 0) return prompt;
+  const parts = present.map((e) => {
+    const g = genderOf(e.traits);
+    const age = ageOf(e.traits);
+    const traits = e.traits.replace(/[.;]$/, "");
+    const head = g
+      ? `${e.name} is unmistakably ${g.toUpperCase()} (${g === "male" ? "a man, masculine face, body, hair and clothing" : "a woman, feminine face, body, hair and clothing"}) — ${traits}`
+      : `${e.name} — ${traits}`;
+    return age ? `${head}; ${e.name} looks exactly ${age}` : head;
+  });
+  return `${prompt} Fixed identities in this frame, never swapped or re-aged: ${parts.join("; ")}.`;
+}
+
+
+/**
  * Reads the brief's handover STATE line: the world facts that must not change
  * between panels (time of day, weather, clothing, props).
  */
