@@ -251,9 +251,18 @@ function Index() {
       tick(true);
 
       let keyTick = 0;
-      const queue: { seg: Shot; prompt: string }[] = pending
+      type Job = { seg: Shot; prompt: string; attempts: number };
+      const queue: Job[] = pending
         .filter((s) => s.prompt && !s.url)
-        .map((s) => ({ seg: s, prompt: s.prompt as string }));
+        .map((s) => ({ seg: s, prompt: s.prompt as string, attempts: 0 }));
+
+      /**
+       * One timestamp = one image, in any condition: a failed panel is pushed
+       * back onto the queue and re-drawn with a fresh seed and key instead of
+       * being dropped. The cap only protects against a genuinely broken
+       * provider looping forever; 10 attempts is far past any real outage.
+       */
+      const MAX_IMAGE_ATTEMPTS = 10;
 
       let promptingDone = batches.length === 0;
 
@@ -305,7 +314,7 @@ function Index() {
               return;
             }
             record(s.index, { prompt, status: "waiting" });
-            queue.push({ seg: s as Shot, prompt });
+            queue.push({ seg: s as Shot, prompt, attempts: 0 });
           });
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
@@ -410,6 +419,20 @@ function Index() {
           if (wait > 0) await new Promise((r) => setTimeout(r, wait));
 
           group.forEach((g) => record(g.seg.index, { status: "drawing" }));
+          /**
+           * A failure is never final: the job goes back on the queue with a
+           * fresh seed/key so every timestamp eventually gets its image. Only
+           * after MAX_IMAGE_ATTEMPTS tries is the panel marked failed.
+           */
+          const requeue = (g: Job, msg: string) => {
+            if (/429|rate|quota/i.test(msg)) cooldownUntil = Date.now() + 5000;
+            if (g.attempts + 1 < MAX_IMAGE_ATTEMPTS && !cancelRef.current) {
+              queue.push({ ...g, attempts: g.attempts + 1 });
+              record(g.seg.index, { status: "waiting", error: undefined });
+            } else {
+              record(g.seg.index, { status: "error", prompt: g.prompt, error: msg });
+            }
+          };
           try {
             const { results } = await drawBatch({
               data: {
@@ -417,7 +440,7 @@ function Index() {
                 jobs: group.map((g) => ({
                   index: g.seg.index,
                   prompt: g.prompt,
-                  seed: 1000 + g.seg.index,
+                  seed: 1000 + g.seg.index + g.attempts * 7919,
                   slot: keyTick++,
                   line: g.seg.text,
                 })),
@@ -425,16 +448,14 @@ function Index() {
             });
             await Promise.all(
               results.map(async (r) => {
+                const job = group.find((g) => g.seg.index === r.index);
                 if (r.url) {
                   // Pixel-level blank check in the browser: a flat/empty frame
                   // is re-rolled on a fresh seed and key so every timestamp
                   // ends up with a real image.
                   let url: string | null = r.url;
                   // the review pass may have rewritten the prompt server-side
-                  const prompt =
-                    r.prompt ??
-                    group.find((g) => g.seg.index === r.index)?.prompt ??
-                    "";
+                  const prompt = r.prompt ?? job?.prompt ?? "";
                   for (let attempt = 1; attempt <= 2; attempt++) {
                     if (!url || !(await isBlankImageUrl(url))) break;
                     url = null;
@@ -455,25 +476,27 @@ function Index() {
                   }
                   if (url && !(await isBlankImageUrl(url))) {
                     record(r.index, { url, prompt, status: "done", error: undefined });
+                  } else if (job) {
+                    requeue(job, "blank image");
                   } else {
                     record(r.index, { status: "error", error: "blank image" });
                   }
                   return;
                 }
-                const msg = r.error ?? "render failed";
-                if (/429|rate|quota/i.test(msg)) cooldownUntil = Date.now() + 5000;
-                record(r.index, { status: "error", error: msg });
+                if (job) {
+                  requeue(job, r.error ?? "render failed");
+                } else {
+                  record(r.index, { status: "error", error: r.error ?? "render failed" });
+                }
               }),
             );
 
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
-            if (/429|rate|quota/i.test(msg)) cooldownUntil = Date.now() + 5000;
-            group.forEach((g) =>
-              record(g.seg.index, { status: "error", prompt: g.prompt, error: msg }),
-            );
+            group.forEach((g) => requeue(g, msg));
           }
-          drawn += group.length;
+          // Count finished panels only — re-queued jobs must not inflate it.
+          drawn = list.filter((s) => s.status === "done").length;
           tick();
           persist();
         }
